@@ -95,6 +95,12 @@ drivers/tty/vt/defkeymap.c
 lib/crc32table.h
 lib/gen_crc32table
 scripts/kconfig/mconf
+scripts/basic/fixdep
+scripts/kconfig/conf
+scripts/kconfig/lex.zconf.c
+scripts/kconfig/zconf.hash.c
+scripts/kconfig/zconf.tab.c
+
 
 
 # stgit generated dirs

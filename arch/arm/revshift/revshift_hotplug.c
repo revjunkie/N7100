@@ -22,8 +22,6 @@
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
-#include <linux/input.h>
 #include <linux/device.h>
 #include <linux/miscdevice.h>
 #include <linux/cpufreq.h>
@@ -37,7 +35,6 @@ unsigned int shift_cpu1;
 unsigned int shift_threshold;
 unsigned int down_shift;
 unsigned int downshift_threshold;
-unsigned int touchplug_duration;
 unsigned int sample_time;
 unsigned int min_cpu;
 unsigned int max_cpu;
@@ -51,7 +48,6 @@ unsigned int shift_diff_all;
 	.down_shift = 20,
 	.downshift_threshold = 10,
 	.sample_time = 100,
-	.touchplug_duration = 5000,
 	.min_cpu = 1,
 	.max_cpu = 4,	
 };
@@ -65,8 +61,6 @@ static DEFINE_PER_CPU(struct cpu_info, rev_info);
 
 static bool active = true;
 module_param(active, bool, 0644);
-static bool touchplug = false;
-module_param(touchplug, bool, 0644);
 static unsigned int debug = 0;
 module_param(debug, uint, 0644);
 
@@ -77,10 +71,8 @@ do { 				\
 } while (0)
 
 static struct delayed_work hotplug_decision_work;
-static struct work_struct touchplug_boost_work;
-static struct delayed_work touchplug_down;
 static struct workqueue_struct *hotplug_decision_wq;
-static struct workqueue_struct *touchplug_wq;
+
 
 struct cpu_time_info {
 	cputime64_t prev_cpu_idle;
@@ -102,23 +94,14 @@ static int get_avg_load(void)
 		struct cpu_time_info *tmp_info;
 		cputime64_t cur_wall_time, cur_idle_time;
 		unsigned int idle_time, wall_time;
-
 		tmp_info = &per_cpu(hotplug_cpu_time, i);
-
 		cur_idle_time = get_cpu_idle_time_us(i, &cur_wall_time);
-
-		idle_time = (unsigned int)cputime64_sub(cur_idle_time,
-						tmp_info->prev_cpu_idle);
+		idle_time = (unsigned int)cputime64_sub(cur_idle_time, tmp_info->prev_cpu_idle);
 		tmp_info->prev_cpu_idle = cur_idle_time;
-
-		wall_time = (unsigned int)cputime64_sub(cur_wall_time,
-						tmp_info->prev_cpu_wall);
+		wall_time = (unsigned int)cputime64_sub(cur_wall_time, tmp_info->prev_cpu_wall);
 		tmp_info->prev_cpu_wall = cur_wall_time;
-
 		tmp_info->load = 100 * (wall_time - idle_time) / wall_time;
-
 		load += (tmp_info->load * cur_freq) / policy->max;
-	
 	}
 	return load;
 }
@@ -185,26 +168,6 @@ static inline void unplug_one(void)
 	rev.shift_diff_all = 0;
 }
 
-static void __cpuinit touchplug_boost_work_fn(struct work_struct *work)
-{
-	unsigned int online_cpus = num_online_cpus();
-
-	if (online_cpus == 1) 
- 			cpu_up(1);	
-	dprintk("touchplug detected\n");
-}
-
-static void  __cpuinit touchplug_down_fn(struct work_struct *work)
-{
-	unsigned int cpu, online_cpus = num_online_cpus();
-
-	if (online_cpus == 2) {
-		for_each_online_cpu(cpu)
-			if (cpu_online(cpu))
-			cpu_down(cpu);
-	}
-}
-
 static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 {
 	unsigned int online_cpus, down_load, up_load, load, down_shift;
@@ -245,12 +208,6 @@ static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 				rev.down_diff++;
 				dprintk("down_diff is %d\n", rev.down_diff);
 			if (rev.down_diff >= rev.downshift_threshold) {
-				if (touchplug) {
-					if (online_cpus == 2) {
-						schedule_delayed_work_on(0, &touchplug_down, msecs_to_jiffies(rev.touchplug_duration));
-					} else 
-						unplug_one();
-					} else
 					unplug_one();
 				}
 		} else if (load >= down_load && rev.down_diff > 0) {	
@@ -276,7 +233,6 @@ show_one(shift_threshold, shift_threshold);
 show_one(down_shift, down_shift);
 show_one(downshift_threshold, downshift_threshold);
 show_one(sample_time, sample_time);
-show_one(touchplug_duration, touchplug_duration);
 show_one(min_cpu,min_cpu);
 show_one(max_cpu,max_cpu);
 
@@ -299,7 +255,6 @@ store_one(shift_threshold, shift_threshold);
 store_one(down_shift, down_shift);
 store_one(downshift_threshold, downshift_threshold);
 store_one(sample_time, sample_time);
-store_one(touchplug_duration, touchplug_duration);
 store_one(min_cpu,min_cpu);
 store_one(max_cpu,max_cpu);
 
@@ -309,7 +264,6 @@ static DEVICE_ATTR(shift_threshold, 0644, show_shift_threshold, store_shift_thre
 static DEVICE_ATTR(down_shift, 0644, show_down_shift, store_down_shift);
 static DEVICE_ATTR(downshift_threshold, 0644, show_downshift_threshold, store_downshift_threshold);
 static DEVICE_ATTR(sample_time, 0644, show_sample_time, store_sample_time);
-static DEVICE_ATTR(touchplug_duration, 0644, show_touchplug_duration, store_touchplug_duration);
 static DEVICE_ATTR(min_cpu, 0644, show_min_cpu, store_min_cpu);
 static DEVICE_ATTR(max_cpu, 0644, show_max_cpu, store_max_cpu);
 
@@ -321,7 +275,6 @@ static struct attribute *revshift_hotplug_attributes[] =
 	&dev_attr_down_shift.attr,
 	&dev_attr_downshift_threshold.attr,
 	&dev_attr_sample_time.attr,
-	&dev_attr_touchplug_duration.attr,
 	&dev_attr_min_cpu.attr,
 	&dev_attr_max_cpu.attr,
 	NULL
@@ -338,76 +291,10 @@ static struct miscdevice revshift_hotplug_device =
 	.name = "revshift_hotplug",
     };
 
-
-static void touchplug_input_event(struct input_handle *handle,
- 		unsigned int type, unsigned int code, int value)
-{
- 	if (touchplug) {	
-	queue_work(touchplug_wq, &touchplug_boost_work);
-	}
-}
- 
-static int touchplug_input_connect(struct input_handler *handler,
- 		struct input_dev *dev, const struct input_device_id *id)
-{
- 	struct input_handle *handle;
- 	int error;
- 
- 	handle = kzalloc(sizeof(struct input_handle), GFP_KERNEL);
- 	if (!handle)
- 		return -ENOMEM;
- 
- 	handle->dev = dev;
- 	handle->handler = handler;
- 	handle->name = "touchplug_input_handler";
-
- 
- 	error = input_register_handle(handle);
- 	if (error)
- 		goto err2;
- 
- 	error = input_open_device(handle);
- 	if (error)
- 		goto err1;
- 	dprintk("%s found and connected!\n", dev->name);
- 	return 0;
- err1:
- 	input_unregister_handle(handle);
- err2:
- 	kfree(handle);
- 	return error;
-}
- 
-static void touchplug_input_disconnect(struct input_handle *handle)
-{
- 	input_close_device(handle);
- 	input_unregister_handle(handle);
- 	kfree(handle);
-}
-
-static const struct input_device_id touchplug_ids[] = {
- 	{ .driver_info = 1 },
- 	{ },
-};
- 
-static struct input_handler touchplug_input_handler = {
- 	.event          = touchplug_input_event,
- 	.connect        = touchplug_input_connect,
- 	.disconnect     = touchplug_input_disconnect,
- 	.name           = "touchplug_input_handler",
- 	.id_table       = touchplug_ids,
-};
-
 int __init revshift_hotplug_init(void)
 {
 	int ret;
 
-	ret = input_register_handler(&touchplug_input_handler);
-	if (ret)
-	{
-		ret = -EINVAL;
-		goto err;
-	}
 	ret = misc_register(&revshift_hotplug_device);
 	if (ret)
 	{
@@ -423,12 +310,9 @@ int __init revshift_hotplug_init(void)
 		goto err;
 	}
 	hotplug_decision_wq = alloc_workqueue("hotplug_decision_work",
-				WQ_HIGHPRI | WQ_UNBOUND, 0);
-	touchplug_wq = alloc_workqueue("touchplug", WQ_HIGHPRI, 0);	
+				WQ_HIGHPRI | WQ_UNBOUND, 0);	
 
 	INIT_DELAYED_WORK(&hotplug_decision_work, hotplug_decision_work_fn);
-	INIT_DELAYED_WORK(&touchplug_down, touchplug_down_fn);
-	INIT_WORK(&touchplug_boost_work, touchplug_boost_work_fn);
 
 	schedule_delayed_work_on(0, &hotplug_decision_work, HZ * 20);
 	return 0;

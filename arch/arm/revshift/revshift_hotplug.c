@@ -27,6 +27,9 @@
 #include <linux/cpufreq.h>
 #include <linux/ktime.h>
 #include <linux/tick.h>
+#ifdef CONFIG_HAS_EARLYSUSPEND
+#include <linux/earlysuspend.h>
+#endif
 
 struct rev_tune
 {
@@ -85,23 +88,22 @@ static DEFINE_PER_CPU(struct cpu_time_info, hotplug_cpu_time);
 static int get_avg_load(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
-	unsigned int i, load = 0;
+	unsigned int cpu, load = 0;
 	unsigned int cur_freq;
 
-	cur_freq = cpufreq_get(0);
-
-	for_each_online_cpu(i) {
+	for_each_online_cpu(cpu) {
 		struct cpu_time_info *tmp_info;
 		cputime64_t cur_wall_time, cur_idle_time;
 		unsigned int idle_time, wall_time;
-		tmp_info = &per_cpu(hotplug_cpu_time, i);
-		cur_idle_time = get_cpu_idle_time_us(i, &cur_wall_time);
+		cur_freq = cpufreq_get(cpu);
+		tmp_info = &per_cpu(hotplug_cpu_time, cpu);
+		cur_idle_time = get_cpu_idle_time_us(cpu, &cur_wall_time);
 		idle_time = (unsigned int)cputime64_sub(cur_idle_time, tmp_info->prev_cpu_idle);
 		tmp_info->prev_cpu_idle = cur_idle_time;
 		wall_time = (unsigned int)cputime64_sub(cur_wall_time, tmp_info->prev_cpu_wall);
 		tmp_info->prev_cpu_wall = cur_wall_time;
 		tmp_info->load = 100 * (wall_time - idle_time) / wall_time;
-		load += (tmp_info->load * cur_freq) / policy->max;
+		load += (tmp_info->load * cur_freq) / policy->cpuinfo.max_freq;
 	}
 	return load;
 }
@@ -291,6 +293,33 @@ static struct miscdevice revshift_hotplug_device =
 	.name = "revshift_hotplug",
     };
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void revshift_early_suspend(struct early_suspend *handler)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		if (cpu)
+			cpu_down(cpu);
+	dprintk("Offlining CPUs for early suspend\n");
+	}
+
+	cancel_delayed_work_sync(&hotplug_decision_work);
+}
+
+static void revshift_late_resume(struct early_suspend *handler)
+{
+	dprintk("late resume handler\n");
+
+	queue_delayed_work(hotplug_decision_wq, &hotplug_decision_work, msecs_to_jiffies(rev.sample_time));
+}
+
+static struct early_suspend revshift_suspend = {
+	.suspend = revshift_early_suspend,
+	.resume = revshift_late_resume,
+};
+#endif /* CONFIG_HAS_EARLYSUSPEND */
+
 int __init revshift_hotplug_init(void)
 {
 	int ret;
@@ -315,6 +344,9 @@ int __init revshift_hotplug_init(void)
 	INIT_DELAYED_WORK(&hotplug_decision_work, hotplug_decision_work_fn);
 
 	schedule_delayed_work_on(0, &hotplug_decision_work, HZ * 20);
+#ifdef CONFIG_HAS_EARLYSUSPEND
+	register_early_suspend(&revshift_suspend);
+#endif
 	return 0;
 	
 err:

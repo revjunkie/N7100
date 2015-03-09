@@ -36,6 +36,7 @@ struct rev_tune
 unsigned int shift_all;
 unsigned int shift_cpu1;
 unsigned int shift_threshold;
+unsigned int shift_all_threshold;
 unsigned int down_shift;
 unsigned int downshift_threshold;
 unsigned int sample_time;
@@ -45,12 +46,13 @@ unsigned int down_diff;
 unsigned int shift_diff;
 unsigned int shift_diff_all;
 } rev = {
-	.shift_all = 180,
-	.shift_cpu1 = 30,
-	.shift_threshold = 4,
-	.down_shift = 20,
+	.shift_all = 185,
+	.shift_cpu1 = 40,
+	.shift_threshold = 2,
+	.shift_all_threshold = 1, 
+	.down_shift = 30,
 	.downshift_threshold = 10,
-	.sample_time = 100,
+	.sample_time = 200,
 	.min_cpu = 1,
 	.max_cpu = 4,	
 };
@@ -58,8 +60,8 @@ unsigned int shift_diff_all;
 struct cpu_info
 {
 unsigned int cur;
-cputime64_t prev_cpu_idle;
-cputime64_t prev_cpu_wall;
+u64 prev_cpu_idle;
+u64 prev_cpu_wall;
 unsigned int load;
 };
 
@@ -145,17 +147,16 @@ static inline void unplug_one(void)
 
 static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 {
-	unsigned int online_cpus, down_load, up_load, down_shift, cur_freq, max_freq;
-	unsigned int cpu, load = 0;
+	unsigned int online_cpus, down_load, up_load, down_shift, load;
+	unsigned int cpu, total_load = 0;
+	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	mutex_lock(&hotplug_lock);
 	if (active) {
 	get_online_cpus();
 	for_each_online_cpu(cpu) {
 		struct cpu_info *tmp_info;
-		cputime64_t cur_wall_time, cur_idle_time;
+		u64 cur_wall_time, cur_idle_time;
 		unsigned int idle_time, wall_time;
-		cur_freq = cpufreq_quick_get(cpu);
-		max_freq = cpufreq_quick_get_max(cpu);
 		tmp_info = &per_cpu(rev_info, cpu);
 		cur_idle_time = get_cpu_idle_time_us(cpu, &cur_wall_time);
 		idle_time = (unsigned int) (cur_idle_time - tmp_info->prev_cpu_idle);
@@ -163,8 +164,11 @@ static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 		wall_time = (unsigned int) (cur_wall_time - tmp_info->prev_cpu_wall);
 		tmp_info->prev_cpu_wall = cur_wall_time;
 		tmp_info->load = 100 * (wall_time - idle_time) / wall_time;
-		load += (tmp_info->load * cur_freq) / max_freq;
+		if (wall_time < idle_time)
+			queue_delayed_work_on(0, hotplug_decision_wq, &hotplug_decision_work, msecs_to_jiffies(rev.sample_time));
+		total_load += tmp_info->load;
 		}
+		load = (total_load * policy->cur) / policy->max; 
 		dprintk("load is %d\n", load);
 	put_online_cpus();
 	online_cpus = num_online_cpus();
@@ -172,10 +176,10 @@ static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 	down_shift = rev.shift_cpu1 * (online_cpus - 1) * (online_cpus - 1);
 	down_load = min((down_shift - rev.down_shift), (rev.shift_all - rev.down_shift));
 	
-	if (load > rev.shift_all && rev.shift_diff_all < (rev.shift_threshold - 2) && online_cpus < rev.max_cpu) {
+	if (load > rev.shift_all && rev.shift_diff_all < rev.shift_all_threshold && online_cpus < rev.max_cpu) {
 				rev.shift_diff_all++;
 				dprintk("shift_diff_all is %d\n", rev.shift_diff_all);
-		if (rev.shift_diff_all >= (rev.shift_threshold - 2)) {		
+		if (rev.shift_diff_all >= rev.shift_all_threshold) {		
 				hotplug_all();
 				dprintk("revshift: Onlining all CPUs, load: %d\n", load);	
 				}		
@@ -208,7 +212,7 @@ static void  __cpuinit hotplug_decision_work_fn(struct work_struct *work)
 				dprintk("down_diff reset to %d\n", rev.down_diff);
 			}
 		}		
-	queue_delayed_work(hotplug_decision_wq, &hotplug_decision_work, msecs_to_jiffies(rev.sample_time));
+	queue_delayed_work_on(0, hotplug_decision_wq, &hotplug_decision_work, msecs_to_jiffies(rev.sample_time));
 	mutex_unlock(&hotplug_lock);
 }
 
@@ -223,6 +227,7 @@ static ssize_t show_##file_name						\
 show_one(shift_cpu1, shift_cpu1);
 show_one(shift_all, shift_all);
 show_one(shift_threshold, shift_threshold);
+show_one(shift_all_threshold, shift_all_threshold);
 show_one(down_shift, down_shift);
 show_one(downshift_threshold, downshift_threshold);
 show_one(sample_time, sample_time);
@@ -245,6 +250,7 @@ static ssize_t store_##file_name					\
 store_one(shift_cpu1, shift_cpu1);
 store_one(shift_all, shift_all);
 store_one(shift_threshold, shift_threshold);
+store_one(shift_all_threshold, shift_all_threshold);
 store_one(down_shift, down_shift);
 store_one(downshift_threshold, downshift_threshold);
 store_one(sample_time, sample_time);
@@ -254,6 +260,7 @@ store_one(max_cpu,max_cpu);
 static DEVICE_ATTR(shift_cpu1, 0644, show_shift_cpu1, store_shift_cpu1);
 static DEVICE_ATTR(shift_all, 0644, show_shift_all, store_shift_all);
 static DEVICE_ATTR(shift_threshold, 0644, show_shift_threshold, store_shift_threshold);
+static DEVICE_ATTR(shift_all_threshold, 0644, show_shift_all_threshold, store_shift_all_threshold);
 static DEVICE_ATTR(down_shift, 0644, show_down_shift, store_down_shift);
 static DEVICE_ATTR(downshift_threshold, 0644, show_downshift_threshold, store_downshift_threshold);
 static DEVICE_ATTR(sample_time, 0644, show_sample_time, store_sample_time);
@@ -265,6 +272,7 @@ static struct attribute *revshift_hotplug_attributes[] =
 	&dev_attr_shift_cpu1.attr,
 	&dev_attr_shift_all.attr,
 	&dev_attr_shift_threshold.attr,
+	&dev_attr_shift_all_threshold.attr,
 	&dev_attr_down_shift.attr,
 	&dev_attr_downshift_threshold.attr,
 	&dev_attr_sample_time.attr,

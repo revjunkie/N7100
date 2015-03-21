@@ -1284,7 +1284,6 @@ config ARM_ERRATA_763722
 endmenu
 
 source "arch/arm/common/Kconfig"
-source "arch/arm/revshift/Kconfig"
 
 menu "Bus support"
 
@@ -1377,6 +1376,12 @@ endmenu
 menu "Kernel Features"
 
 source "kernel/time/Kconfig"
+
+config REVACTIVE
+	bool "Revactive Hotplug Driver" 
+	default y
+	help
+	  Custom Hotplug Driver that turns on/off cores based on system load.
 
 config SMP
 	bool "Symmetric Multi-Processing"

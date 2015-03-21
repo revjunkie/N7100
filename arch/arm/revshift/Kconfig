@@ -1,5 +1,0 @@
-config REVSHIFT
-	bool "Enable Revshift Hotplug Driver"
-	default y
-	help
-	  Turns on/off cores based on system load

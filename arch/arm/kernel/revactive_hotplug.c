@@ -271,7 +271,7 @@ static DEVICE_ATTR(sample_time, 0644, show_sample_time, store_sample_time);
 static DEVICE_ATTR(min_cpu, 0644, show_min_cpu, store_min_cpu);
 static DEVICE_ATTR(max_cpu, 0644, show_max_cpu, store_max_cpu);
 
-static struct attribute *revshift_hotplug_attributes[] = 
+static struct attribute *revactive_hotplug_attributes[] = 
     {
 	&dev_attr_shift_one.attr,
 	&dev_attr_shift_all.attr,
@@ -285,15 +285,15 @@ static struct attribute *revshift_hotplug_attributes[] =
 	NULL
     };
 
-static struct attribute_group revshift_hotplug_group = 
+static struct attribute_group revactive_hotplug_group = 
     {
-	.attrs  = revshift_hotplug_attributes,
+	.attrs  = revactive_hotplug_attributes,
     };
 
-static struct miscdevice revshift_hotplug_device = 
+static struct miscdevice revactive_hotplug_device = 
     {
 	.minor = MISC_DYNAMIC_MINOR,
-	.name = "revshift_hotplug",
+	.name = "revactive_hotplug",
     };
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -323,18 +323,18 @@ static struct early_suspend revshift_suspend = {
 };
 #endif 
 
-int __init revshift_hotplug_init(void)
+int __init revactive_hotplug_init(void)
 {
 	int ret;
 
-	ret = misc_register(&revshift_hotplug_device);
+	ret = misc_register(&revactive_hotplug_device);
 	if (ret)
 	{
 		ret = -EINVAL;
 		goto err;
 	}
-	ret = sysfs_create_group(&revshift_hotplug_device.this_device->kobj,
-			&revshift_hotplug_group);
+	ret = sysfs_create_group(&revactive_hotplug_device.this_device->kobj,
+			&revactive_hotplug_group);
 
 	if (ret)
 	{
@@ -355,4 +355,4 @@ int __init revshift_hotplug_init(void)
 err:
 	return ret;
 }
-late_initcall(revshift_hotplug_init);
+late_initcall(revactive_hotplug_init);

@@ -16,16 +16,12 @@
  *
  */
 
-#include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
 #include <linux/sched.h>
-#include <linux/device.h>
-#include <linux/miscdevice.h>
 #include <linux/cpufreq.h>
-#include <linux/ktime.h>
 #include <linux/tick.h>
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #include <linux/earlysuspend.h>
@@ -33,6 +29,7 @@
 
 struct rev_tune
 {
+unsigned int active;
 unsigned int shift_all;
 unsigned int shift_one;
 unsigned int shift_threshold;
@@ -46,6 +43,7 @@ unsigned int down_diff;
 unsigned int shift_diff;
 unsigned int shift_diff_all;
 } rev = {
+	.active = 1,
 	.shift_all = 95,
 	.shift_one = 40,
 	.shift_threshold = 2,
@@ -68,8 +66,6 @@ unsigned int load;
 static DEFINE_PER_CPU(struct cpu_info, rev_info);
 static DEFINE_MUTEX(hotplug_lock);
 
-static bool active = true;
-module_param(active, bool, 0644);
 static unsigned int debug = 0;
 module_param(debug, uint, 0644);
 
@@ -146,7 +142,6 @@ static void  __cpuinit hotplug_decision_work(struct work_struct *work)
 	unsigned int online_cpus, down_load, up_load, load;
 	unsigned int i, total_load = 0;
 	mutex_lock(&hotplug_lock);
-	if (active) {
 	get_online_cpus();
 	for_each_online_cpu(i) {
 		struct cpu_info *tmp_info;
@@ -167,14 +162,13 @@ static void  __cpuinit hotplug_decision_work(struct work_struct *work)
 	online_cpus = num_online_cpus();
 	load = (total_load * cpufreq_quick_get(0) / cpufreq_quick_get_max(0)) / online_cpus;  
 		REV_INFO("load is %d\n", load);
-	up_load = online_cpus > 1 ? rev.shift_one + 20 : rev.shift_one;
+	up_load = online_cpus > 1 ? rev.shift_one + 30 : rev.shift_one;
 	down_load = online_cpus > 2 ? rev.down_shift + 25 : rev.down_shift;
 	
-		if (load > rev.shift_all && rev.shift_diff_all < rev.shift_all_threshold 
-			&& online_cpus < rev.max_cpu) {
+		if (load > rev.shift_all && online_cpus < rev.max_cpu) {
 				++rev.shift_diff_all;
 				REV_INFO("shift_diff_all is %d\n", rev.shift_diff_all);
-			if (rev.shift_diff_all >= rev.shift_all_threshold) {		
+			if (rev.shift_diff_all > rev.shift_all_threshold) {		
 				hotplug_all();
 				REV_INFO("revshift: Onlining all CPUs, load: %d\n", load);	
 				}		
@@ -183,11 +177,10 @@ static void  __cpuinit hotplug_decision_work(struct work_struct *work)
 				rev.shift_diff_all = 0;
 				REV_INFO("shift_diff_all reset to %d\n", rev.shift_diff_all);
 			} 
-		if (load > up_load && rev.shift_diff < rev.shift_threshold 
-			&& online_cpus < rev.max_cpu) {
+		if (load > up_load && online_cpus < rev.max_cpu) {
 				++rev.shift_diff;
 				REV_INFO("shift_diff is %d\n", rev.shift_diff);
-			if (rev.shift_diff >= rev.shift_threshold) {
+			if (rev.shift_diff > rev.shift_threshold) {
 				hotplug_one();	
 				}				
 		}
@@ -195,31 +188,31 @@ static void  __cpuinit hotplug_decision_work(struct work_struct *work)
 				rev.shift_diff = 0;
 				REV_INFO("shift_diff reset to %d\n", rev.shift_diff);
 			}	
-		if (load < down_load && rev.down_diff < rev.downshift_threshold 
-			&& online_cpus > rev.min_cpu) {	
+		if (load < down_load && online_cpus > rev.min_cpu) {	
 				++rev.down_diff;
 				REV_INFO("down_diff is %d down_load is %d\n", rev.down_diff, down_load);
-			if (rev.down_diff >= rev.downshift_threshold) {
+			if (rev.down_diff > rev.downshift_threshold) {
 					unplug_one();
 				}
 		}
 		if (load >= down_load && rev.down_diff > 0) {	
 				--rev.down_diff;
 				REV_INFO("down_diff reset to %d\n", rev.down_diff);
-			}
 		}		
 	queue_delayed_work_on(0, hotplug_wq, &hotplug_work, msecs_to_jiffies(rev.sample_time));
 	mutex_unlock(&hotplug_lock);
 }
 
 /**************SYSFS*******************/
+struct kobject *rev_kobject;
 
 #define show_one(file_name, object)					\
 static ssize_t show_##file_name						\
-(struct device * dev, struct device_attribute * attr, char * buf)	\
+(struct kobject *kobj, struct attribute *attr, char *buf)	\
 {									\
 	return sprintf(buf, "%u\n", rev.object);			\
 }
+show_one(active, active);
 show_one(shift_one, shift_one);
 show_one(shift_all, shift_all);
 show_one(shift_threshold, shift_threshold);
@@ -227,13 +220,31 @@ show_one(shift_all_threshold, shift_all_threshold);
 show_one(down_shift, down_shift);
 show_one(downshift_threshold, downshift_threshold);
 show_one(sample_time, sample_time);
-show_one(min_cpu,min_cpu);
-show_one(max_cpu,max_cpu);
+show_one(min_cpu, min_cpu);
+show_one(max_cpu, max_cpu);
 
+static ssize_t __ref store_active(struct kobject *a, struct attribute *b, const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+	ret = sscanf(buf, "%u", &input);
+	if (ret != 1)
+		return -EINVAL;
+	rev.active = input;
+		if (rev.active) {
+			queue_delayed_work_on(0, hotplug_wq, &hotplug_work, msecs_to_jiffies(rev.sample_time));
+		} else {
+			hotplug_all();
+			flush_workqueue(hotplug_wq);
+			cancel_delayed_work_sync(&hotplug_work);
+		}
+	return count;
+}
+define_one_global_rw(active);
 
 #define store_one(file_name, object)					\
 static ssize_t store_##file_name					\
-(struct device * dev, struct device_attribute * attr, const char * buf, size_t count)	\
+(struct kobject *a, struct attribute *b, const char *buf, size_t count)	\
 {									\
 	unsigned int input;						\
 	int ret;							\
@@ -242,7 +253,8 @@ static ssize_t store_##file_name					\
 		return -EINVAL;						\
 	rev.object = input;						\
 	return count;							\
-}			
+}									\
+define_one_global_rw(file_name);
 store_one(shift_one, shift_one);
 store_one(shift_all, shift_all);
 store_one(shift_threshold, shift_threshold);
@@ -250,43 +262,29 @@ store_one(shift_all_threshold, shift_all_threshold);
 store_one(down_shift, down_shift);
 store_one(downshift_threshold, downshift_threshold);
 store_one(sample_time, sample_time);
-store_one(min_cpu,min_cpu);
-store_one(max_cpu,max_cpu);
+store_one(min_cpu, min_cpu);
+store_one(max_cpu, max_cpu);
 
-static DEVICE_ATTR(shift_one, 0644, show_shift_one, store_shift_one);
-static DEVICE_ATTR(shift_all, 0644, show_shift_all, store_shift_all);
-static DEVICE_ATTR(shift_threshold, 0644, show_shift_threshold, store_shift_threshold);
-static DEVICE_ATTR(shift_all_threshold, 0644, show_shift_all_threshold, store_shift_all_threshold);
-static DEVICE_ATTR(down_shift, 0644, show_down_shift, store_down_shift);
-static DEVICE_ATTR(downshift_threshold, 0644, show_downshift_threshold, store_downshift_threshold);
-static DEVICE_ATTR(sample_time, 0644, show_sample_time, store_sample_time);
-static DEVICE_ATTR(min_cpu, 0644, show_min_cpu, store_min_cpu);
-static DEVICE_ATTR(max_cpu, 0644, show_max_cpu, store_max_cpu);
-
-static struct attribute *revactive_hotplug_attributes[] = 
-    {
-	&dev_attr_shift_one.attr,
-	&dev_attr_shift_all.attr,
-	&dev_attr_shift_threshold.attr,
-	&dev_attr_shift_all_threshold.attr,
-	&dev_attr_down_shift.attr,
-	&dev_attr_downshift_threshold.attr,
-	&dev_attr_sample_time.attr,
-	&dev_attr_min_cpu.attr,
-	&dev_attr_max_cpu.attr,
+static struct attribute *rev_hotplug_attributes[] = 
+{
+	&active.attr,
+	&shift_one.attr,
+	&shift_all.attr,
+	&shift_threshold.attr,
+	&shift_all_threshold.attr,
+	&down_shift.attr,
+	&downshift_threshold.attr,
+	&sample_time.attr,
+	&min_cpu.attr,
+	&max_cpu.attr,
 	NULL
-    };
+};
 
-static struct attribute_group revactive_hotplug_group = 
-    {
-	.attrs  = revactive_hotplug_attributes,
-    };
-
-static struct miscdevice revactive_hotplug_device = 
-    {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = "revactive_hotplug",
-    };
+static struct attribute_group rev_hotplug_group = 
+{
+	.attrs  = rev_hotplug_attributes,
+	.name = "tune",
+};
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void revshift_early_suspend(struct early_suspend *handler)
@@ -315,30 +313,25 @@ static struct early_suspend revshift_suspend = {
 };
 #endif 
 
-int __init revactive_hotplug_init(void)
+int __init rev_hotplug_init(void)
 {
 	int ret;
 
-	ret = misc_register(&revactive_hotplug_device);
-	if (ret)
-	{
-		ret = -EINVAL;
-		goto err;
-	}
-	ret = sysfs_create_group(&revactive_hotplug_device.this_device->kobj,
-			&revactive_hotplug_group);
-
-	if (ret)
-	{
-		ret = -EINVAL;
-		goto err;
-	}
 	hotplug_wq = alloc_workqueue("hotplug_decision_work",
 				WQ_HIGHPRI, 0);	
 
 	INIT_DELAYED_WORK(&hotplug_work, hotplug_decision_work);
-
+	if (rev.active)
 	schedule_delayed_work_on(0, &hotplug_work, HZ * 20);
+
+	rev_kobject = kobject_create_and_add("rev_hotplug", kernel_kobj);
+	if (rev_kobject) {
+	ret = sysfs_create_group(rev_kobject, &rev_hotplug_group);
+	if (ret) {
+		ret = -EINVAL;
+		goto err;
+		}
+	}
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	register_early_suspend(&revshift_suspend);
 #endif
@@ -347,4 +340,4 @@ int __init revactive_hotplug_init(void)
 err:
 	return ret;
 }
-late_initcall(revactive_hotplug_init);
+late_initcall(rev_hotplug_init);

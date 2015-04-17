@@ -151,7 +151,7 @@ enum {
 #define TSP_CMD_PARAM_NUM 8
 #endif /* SEC_TSP_FACTORY_TEST */
 
-/* Touch booster */
+/* Touch booster 
 #if defined(CONFIG_EXYNOS4_CPUFREQ) &&\
 	defined(CONFIG_BUSFREQ_OPP)
 #define TOUCH_BOOSTER			1
@@ -159,7 +159,7 @@ enum {
 #define TOUCH_BOOSTER_CHG_TIME		200
 #else
 #define TOUCH_BOOSTER			0
-#endif
+#endif */
 
 struct device *sec_touchscreen;
 static struct device *bus_dev;
@@ -331,7 +331,7 @@ struct mms_ts_info {
 
 	struct melfas_tsi_platform_data *pdata;
 	struct early_suspend early_suspend;
-#if TOUCH_BOOSTER
+#ifdef TOUCH_BOOSTER
 	struct delayed_work work_dvfs_off;
 	struct delayed_work work_dvfs_chg;
 	bool dvfs_lock_status;
@@ -461,7 +461,7 @@ struct tsp_cmd tsp_cmds[] = {
 };
 #endif
 
-#if TOUCH_BOOSTER
+#ifdef TOUCH_BOOSTER
 static void change_dvfs_lock(struct work_struct *work)
 {
 	struct mms_ts_info *info = container_of(work,
@@ -499,6 +499,7 @@ static void set_dvfs_off(struct work_struct *work)
 	mutex_unlock(&info->dvfs_lock);
 	}
 
+#ifdef TOUCH_BOOSTER
 static void set_dvfs_lock(struct mms_ts_info *info, uint32_t on)
 {
 	int ret;
@@ -546,7 +547,7 @@ static void set_dvfs_lock(struct mms_ts_info *info, uint32_t on)
 out:
 	mutex_unlock(&info->dvfs_lock);
 }
-
+#endif
 #endif
 
 #ifdef CONFIG_INPUT_FBSUSPEND
@@ -711,7 +712,7 @@ static void release_all_fingers(struct mms_ts_info *info)
 					   false);
 	}
 	input_sync(info->input_dev);
-#if TOUCH_BOOSTER
+#ifdef TOUCH_BOOSTER
 	set_dvfs_lock(info, 2);
 	pr_info("[TSP] dvfs_lock free.\n ");
 #endif
@@ -1099,7 +1100,7 @@ static irqreturn_t mms_ts_interrupt(int irq, void *dev_id)
 	}
 	input_sync(info->input_dev);
 
-#if TOUCH_BOOSTER
+#ifdef TOUCH_BOOSTER
 	set_dvfs_lock(info, !!touch_is_pressed);
 #endif
 
@@ -4232,7 +4233,7 @@ static int __devinit mms_ts_probe(struct i2c_client *client,
 		goto err_reg_input_dev;
 	}
 
-#if TOUCH_BOOSTER
+#ifdef TOUCH_BOOSTER
 	mutex_init(&info->dvfs_lock);
 	INIT_DELAYED_WORK(&info->work_dvfs_off, set_dvfs_off);
 	INIT_DELAYED_WORK(&info->work_dvfs_chg, change_dvfs_lock);
